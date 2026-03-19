@@ -1344,7 +1344,11 @@
               <option value="true">Oui — Accessible aux collègues</option>
             </select>
           </div>
-          <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+            <input type="checkbox" id="folder-skip-ia" style="width:14px;height:14px;accent-color:#E67E22;">
+            <label for="folder-skip-ia" style="font-size:12px;color:#334155;cursor:pointer;">⚡ Mode rapide — uploader sans analyse IA <span style="font-size:10px;color:#94A3B8;">(recommandé pour &gt;10 fichiers)</span></label>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
             <input type="checkbox" id="folder-update-prog" checked style="width:14px;height:14px;accent-color:#1D4ED8;">
             <label for="folder-update-prog" style="font-size:12px;color:#334155;cursor:pointer;">Proposer une mise à jour de la progression après analyse</label>
           </div>
@@ -6059,6 +6063,7 @@ async function submitFolderUpload() {
   const seqId    = document.getElementById('folder-seq').value;
   const isPublic = document.getElementById('folder-public').value === 'true';
   const wantProg = document.getElementById('folder-update-prog').checked;
+  const skipIA   = document.getElementById('folder-skip-ia').checked;
 
   document.getElementById('folder-submit-btn').disabled = true;
   document.getElementById('batch-result-panel').style.display  = 'none';
@@ -6069,12 +6074,20 @@ async function submitFolderUpload() {
   const listEl = document.getElementById('batch-files-list');
   listEl.innerHTML = '';
 
+  // Helper timeout universel
+  function withTimeout(promise, ms, fallback) {
+    return Promise.race([
+      promise,
+      new Promise(function(resolve) { setTimeout(function() { resolve(fallback); }, ms); })
+    ]);
+  }
+
   // Créer les lignes de statut
   const itemEls = pendingFolderFiles.map(function(f, i) {
     const div = document.createElement('div');
     div.id = 'batch-item-' + i;
     div.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;background:#F8FAFC;font-size:11px;color:#475569;';
-    div.innerHTML = '<span id="bi-icon-' + i + '">⏳</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + f.name + '</span><span id="bi-comps-' + i + '" style="color:#1D4ED8;font-weight:700;"></span>';
+    div.innerHTML = '<span id="bi-icon-' + i + '">⏳</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + f.name + '</span><span id="bi-comps-' + i + '" style="color:#1D4ED8;font-weight:700;font-size:10px;"></span>';
     listEl.appendChild(div);
     return div;
   });
@@ -6091,11 +6104,20 @@ async function submitFolderUpload() {
     document.getElementById('bi-icon-' + i).textContent = '🔄';
     itemEls[i].style.background = '#EFF6FF';
 
+    // Laisser le navigateur respirer (repaint)
+    await new Promise(function(r) { setTimeout(r, 30); });
+
     try {
-      // 1. Extraire texte
-      const texte = await extraireTexte(file);
-      // 2. Détecter compétences IA
-      const comps = texte.length > 50 ? await detecterCompetencesIA(texte, file.name) : [];
+      // 1. Extraire texte avec timeout 8s
+      const texte = skipIA ? '' : await withTimeout(
+        extraireTexte(file).catch(function() { return ''; }),
+        8000, ''
+      );
+      // 2. Détecter compétences IA avec timeout 20s
+      const comps = (!skipIA && texte.length > 50) ? await withTimeout(
+        detecterCompetencesIA(texte, file.name).catch(function() { return []; }),
+        20000, []
+      ) : [];
       // 3. Détecter type depuis nom
       const n = file.name.toLowerCase();
       let type = 'Support';
@@ -6138,7 +6160,7 @@ async function submitFolderUpload() {
 
       batchResults.push({ file, comps, type, support, ok: true });
       document.getElementById('bi-icon-' + i).textContent = '✅';
-      document.getElementById('bi-comps-' + i).textContent = comps.length ? comps.join(', ') : '';
+      document.getElementById('bi-comps-' + i).textContent = comps.length ? comps.join(', ') : (skipIA ? '—' : '');
       itemEls[i].style.background = '#F0FDF4';
 
     } catch(e) {
@@ -6151,13 +6173,13 @@ async function submitFolderUpload() {
 
   // Terminer
   document.getElementById('batch-prog-fill').style.width   = '100%';
-  document.getElementById('batch-prog-label').textContent  = '✅ Traitement terminé';
+  document.getElementById('batch-prog-label').textContent  = '✅ Traitement terminé — ' + pendingFolderFiles.length + ' fichier(s)';
 
   // Afficher résultats
-  renderBatchResults(cls, seqId, wantProg);
+  renderBatchResults(cls, seqId, wantProg, skipIA);
 }
 
-function renderBatchResults(cls, seqId, wantProg) {
+function renderBatchResults(cls, seqId, wantProg, skipIA) {
   const ok    = batchResults.filter(function(r) { return r.ok; }).length;
   const allCC = {};
   const tpNames = [];
@@ -6171,17 +6193,21 @@ function renderBatchResults(cls, seqId, wantProg) {
 
   const sortedCC = Object.keys(allCC).sort(function(a, b) { return allCC[b] - allCC[a]; });
 
-  document.getElementById('batch-result-summary').textContent =
-    ok + '/' + batchResults.length + ' fichier(s) traité(s) avec succès';
+  document.getElementById('batch-result-summary').innerHTML =
+    '<b>' + ok + '/' + batchResults.length + '</b> fichier(s) enregistré(s) avec succès' +
+    (skipIA ? ' <span style="font-size:10px;color:#E67E22;background:#FFF7ED;padding:1px 6px;border-radius:4px;border:1px solid #FED7AA;">Mode rapide — sans IA</span>' : '');
 
   document.getElementById('batch-comps-detected').innerHTML =
-    sortedCC.length
-      ? '<div style="font-size:11.5px;font-weight:700;color:#166534;margin-bottom:5px;">🏷️ Compétences détectées dans le dossier :</div>' +
-        sortedCC.map(function(c) {
-          return '<span class="comp-result-tag" style="margin:2px;">' + c +
-            (allCC[c] > 1 ? ' <span style="opacity:.6">×' + allCC[c] + '</span>' : '') + '</span>';
-        }).join('')
-      : '<div style="font-size:11.5px;color:#94A3B8;">Aucune compétence détectée (clé API requise).</div>';
+    skipIA
+      ? '<div style="font-size:11.5px;color:#64748B;margin-bottom:8px;">Analyse IA non effectuée.</div>' +
+        '<button onclick="relancerAnalyseIA()" style="padding:6px 14px;background:#1D4ED8;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;">🤖 Analyser les compétences maintenant</button>'
+      : (sortedCC.length
+          ? '<div style="font-size:11.5px;font-weight:700;color:#166534;margin-bottom:5px;">🏷️ Compétences détectées dans le dossier :</div>' +
+            sortedCC.map(function(c) {
+              return '<span class="comp-result-tag" style="margin:2px;">' + c +
+                (allCC[c] > 1 ? ' <span style="opacity:.6">×' + allCC[c] + '</span>' : '') + '</span>';
+            }).join('')
+          : '<div style="font-size:11.5px;color:#94A3B8;">Aucune compétence détectée (clé API requise).</div>');
 
   // Proposition de mise à jour progression
   if (wantProg && sortedCC.length > 0) {
@@ -6214,6 +6240,53 @@ function renderBatchResults(cls, seqId, wantProg) {
   document.getElementById('batch-progress-panel').style.display = 'none';
   document.getElementById('batch-result-panel').style.display   = 'block';
   loadUserSupports();
+}
+
+// Analyse IA a posteriori sur les fichiers déjà uploadés (mode rapide)
+async function relancerAnalyseIA() {
+  const btn = document.querySelector('[onclick="relancerAnalyseIA()"]');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Analyse en cours...'; }
+
+  function withTimeout(promise, ms, fallback) {
+    return Promise.race([
+      promise,
+      new Promise(function(r) { setTimeout(function() { r(fallback); }, ms); })
+    ]);
+  }
+
+  const allCC = {};
+  for (let i = 0; i < batchResults.length; i++) {
+    const r = batchResults[i];
+    if (!r.ok) continue;
+    if (btn) btn.textContent = '⏳ ' + (i+1) + '/' + batchResults.length + ' — ' + r.file.name;
+    await new Promise(function(res) { setTimeout(res, 20); });
+    const texte = await withTimeout(extraireTexte(r.file).catch(function(){return '';}), 8000, '');
+    const comps = texte.length > 50
+      ? await withTimeout(detecterCompetencesIA(texte, r.file.name).catch(function(){return [];}), 20000, [])
+      : [];
+    r.comps = comps;
+    // Mettre à jour en local storage
+    const s = loadState();
+    if (s.supports) {
+      const idx = s.supports.findIndex(function(x) { return x.id === r.support.id; });
+      if (idx >= 0) { s.supports[idx].competences = comps; saveState(s); }
+    }
+    comps.forEach(function(c) { allCC[c] = (allCC[c] || 0) + 1; });
+    const el = document.getElementById('bi-comps-' + i);
+    if (el) el.textContent = comps.length ? comps.join(', ') : '—';
+  }
+
+  const sortedCC = Object.keys(allCC).sort(function(a,b){return allCC[b]-allCC[a];});
+  document.getElementById('batch-comps-detected').innerHTML =
+    sortedCC.length
+      ? '<div style="font-size:11.5px;font-weight:700;color:#166534;margin-bottom:5px;">🏷️ Compétences détectées :</div>' +
+        sortedCC.map(function(c){
+          return '<span class="comp-result-tag" style="margin:2px;">' + c +
+            (allCC[c] > 1 ? ' <span style="opacity:.6">×' + allCC[c] + '</span>' : '') + '</span>';
+        }).join('')
+      : '<div style="font-size:11.5px;color:#94A3B8;">Aucune compétence détectée (clé API ?)</div>';
+
+  toast('✅ Analyse IA terminée — ' + sortedCC.length + ' compétence(s)');
 }
 
 function appliquerMiseAJourProgression() {
